@@ -199,24 +199,14 @@ func (b *BIndex) Put(key []byte, value []byte) error {
 	c.seek(key)
 	var clone = make([]byte, len(key))
 	copy(clone, key)
-	util.LogDebug("-----------------------before put start--------------------")
-	for pgid, _ := range b.nodes {
-		util.LogDebug(pgid, b.nodes[pgid].inodes)
+	n := c.node()
+	n.put(clone, clone, value, 0)
+	n.rebalanceAfterInsert()
+	minNode := b.minNode()
+	util.LogDebug("minNode:", minNode)
+	if len(minNode.inodes) > 0 && bytes.Compare(minNode.inodes[0].key, key) > 0 {
+		b.adjustMinKey(minNode, minNode.inodes[0].key)
 	}
-	for pgid, _ := range b.nodes {
-		util.LogDebug(pgid, b.nodes[pgid].children)
-	}
-	b.dump()
-	c.node().put(clone, clone, value, 0)
-	util.LogDebug("-----------------------before put end--------------------")
-	for pgid, _ := range b.nodes {
-		util.LogDebug(pgid, b.nodes[pgid].inodes)
-	}
-	for pgid, _ := range b.nodes {
-		util.LogDebug(pgid, b.nodes[pgid].children)
-	}
-	b.dump()
-	c.node().rebalanceAfterInsert()
 	b.commit()
 	return nil
 }
@@ -235,24 +225,27 @@ func (b *BIndex) Delete(key []byte) error {
 	util.LogDebug("Delete:", string(key))
 	c := b.newCursor()
 	c.seek(key)
-	util.LogDebug("-----------------------before delete start--------------------")
-	for pgid, _ := range b.nodes {
-		util.LogDebug(pgid, b.nodes[pgid].inodes)
+	n := c.node()
+	n.del(key)
+	n.rebalanceAfterDelete()
+	minNode := b.minNode()
+	util.LogDebug("minNode:", minNode)
+	if len(minNode.inodes) > 0 && bytes.Compare(minNode.inodes[0].key, key) > 0 {
+		b.adjustMinKey(minNode, minNode.inodes[0].key)
 	}
-	for pgid, _ := range b.nodes {
-		util.LogDebug(pgid, b.nodes[pgid].children)
+	for _, e := range c.stack {
+		var pgid pgid
+		if e.node != nil {
+			pgid = e.node.pgid
+		} else if e.page != nil {
+			pgid = e.page.id
+		}
+		if n, ok := b.nodes[pgid]; ok {
+			n.dump()
+		} else {
+			util.LogDebug(pgid, "is not exist b.nodes!")
+		}
 	}
-	b.dump()
-	c.node().del(key)
-	util.LogDebug("-----------------------before delete end--------------------")
-	for pgid, _ := range b.nodes {
-		util.LogDebug(pgid, b.nodes[pgid].inodes)
-	}
-	for pgid, _ := range b.nodes {
-		util.LogDebug(pgid, b.nodes[pgid], b.nodes[pgid].children)
-	}
-	b.dump()
-	c.node().rebalanceAfterDelete()
 	b.commit()
 	return nil
 }
@@ -299,19 +292,16 @@ func (b *BIndex) minNode() *node {
 }
 
 func (b *BIndex) adjustMinKey(minNode *node, key []byte) {
-	util.LogDebug("compare", string(minNode.inodes[0].key), string(key))
-	if bytes.Compare(minNode.inodes[0].key, key) == 0 {
-		n := minNode
-		for {
-			if n.parent == nil {
-				break
-			} else {
-				n = n.parent
-				util.LogDebug("replace min:", minNode.inodes[1].key)
-				n.inodes[0].key = make([]byte, len(minNode.inodes[1].key))
-				copy(n.inodes[0].key, minNode.inodes[1].key)
-				b.uncommited[n.pgid] = n
-			}
+	n := minNode
+	for {
+		if n.parent == nil {
+			break
+		} else {
+			n = n.parent
+			copy(n.inodes[0].key, key)
+			n.key = n.inodes[0].key
+			util.LogDebug("replace min:", n.pgid, n.inodes)
+			b.uncommited[n.pgid] = n
 		}
 	}
 }
@@ -351,6 +341,13 @@ func (b *BIndex) pageNode(id pgid) (*page, *node) {
 
 func (b *BIndex) commit() error {
 	util.LogDebug("commit start:", b.uncommited)
+	//for i := pgid(1); i <= b.maxPgid; i++ {
+	//	p := b.page(i)
+	//	p.dump()
+	//}
+	for pgid, _ := range b.nodes {
+		util.LogDebug(pgid, string(b.nodes[pgid].key), b.nodes[pgid].inodes)
+	}
 	buf := make([]byte, b.pageSize)
 	p := b.pageInBuffer(buf, pgid(0))
 	p.id = pgid(0)
@@ -362,11 +359,15 @@ func (b *BIndex) commit() error {
 	m.root = b.root
 	m.maxPgid = b.maxPgid
 	m.checksum = m.sum64()
+	util.LogDebug(p.id, p.flags, p.count, m)
 	if _, err := b.file.WriteAt(buf, 0); err != nil {
 		return err
 	}
 	for _, node := range b.uncommited {
+		util.LogDebug(node)
+		node.dereference()
 		node.write()
+		util.LogDebug(node)
 	}
 	if err := b.file.Sync(); err != nil {
 		return err
@@ -376,6 +377,9 @@ func (b *BIndex) commit() error {
 	for i := pgid(1); i <= b.maxPgid; i++ {
 		p := b.page(i)
 		p.dump()
+	}
+	for pgid, _ := range b.nodes {
+		util.LogDebug(pgid, string(b.nodes[pgid].key), b.nodes[pgid].inodes)
 	}
 	return nil
 }

@@ -61,6 +61,7 @@ func (c *Cursor) searchNode(key []byte, n *node) {
 	if !exact && index > 0 {
 		index--
 	}
+	util.LogDebug("searchNode:", n, index, string(key))
 	c.stack[len(c.stack)-1].index = index
 	c.search(key, n.inodes[index].pgid)
 }
