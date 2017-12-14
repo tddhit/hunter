@@ -2,6 +2,8 @@ package bindex
 
 import (
 	"unsafe"
+
+	"github.com/tddhit/hunter/util"
 )
 
 const (
@@ -23,6 +25,24 @@ type page struct {
 	flags uint16
 	count uint16
 	ptr   uintptr
+}
+
+func (p *page) dump() {
+	util.LogDebug("-------------------------")
+	util.LogDebug("pgid:", p.id)
+	util.LogDebug("flag:", p.flags)
+	util.LogDebug("count:", p.count)
+	for i := 0; i < int(p.count); i++ {
+		if p.flags == LeafPageFlag {
+			elem := p.leafPageElement(uint16(i))
+			util.LogDebug("key:", string(elem.key()))
+			util.LogDebug("value:", string(elem.value()))
+		} else {
+			elem := p.branchPageElement(uint16(i))
+			util.LogDebug("key:", string(elem.key()))
+			util.LogDebug("pgid:", elem.pgid)
+		}
+	}
 }
 
 func (p *page) meta() *meta {

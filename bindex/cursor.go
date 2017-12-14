@@ -13,7 +13,7 @@ type Cursor struct {
 }
 
 func (c *Cursor) seek(seek []byte) (key []byte, value []byte) {
-	c.search(seek, c.bindex.meta.root)
+	c.search(seek, c.bindex.root)
 	for i := 0; i < len(c.stack); i++ {
 		e := c.stack[i]
 		if e.page != nil {

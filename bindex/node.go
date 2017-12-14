@@ -119,6 +119,7 @@ func (n *node) put(oldKey, newKey, value []byte, pgid pgid) {
 	inode.key = newKey
 	inode.value = value
 	inode.pgid = pgid
+	n.bindex.uncommited[n.pgid] = n
 }
 
 func (n *node) splitIndex() (index int) {
@@ -152,18 +153,19 @@ func (n *node) rebalanceAfterInsert() {
 		n.parent = &node{
 			bindex:   n.bindex,
 			isLeaf:   false,
-			pgid:     n.bindex.alloc(),
+			pgid:     n.bindex.allocPage(),
 			parent:   nil,
 			children: nodes{n},
 		}
+		n.bindex.root = n.parent.pgid
+		n.bindex.maxPgid = n.parent.pgid
 		n.bindex.nodes[n.parent.pgid] = n.parent
-		n.bindex.meta.root = n.parent.pgid
-		n.bindex.root = n.parent
+		n.bindex.uncommited[n.parent.pgid] = n.parent
 	}
 	next := &node{
 		bindex: n.bindex,
 		isLeaf: n.isLeaf,
-		pgid:   n.bindex.alloc(),
+		pgid:   n.bindex.allocPage(),
 		parent: n.parent,
 	}
 	next.inodes = make(inodes, len(n.inodes[splitIndex:]))
@@ -195,10 +197,9 @@ func (n *node) rebalanceAfterInsert() {
 	n.parent.put(key, next.inodes[0].key, nil, next.pgid)
 	next.key = next.inodes[0].key
 	n.bindex.nodes[next.pgid] = next
-	n.write()
-	next.write()
-	n.parent.write()
-	n.bindex.meta.write(n.bindex)
+	n.bindex.uncommited[n.pgid] = n
+	n.bindex.uncommited[next.pgid] = next
+	n.bindex.uncommited[n.parent.pgid] = n.parent
 	util.LogDebug("-----------------------rebalance end--------------------")
 	for pgid, _ := range n.bindex.nodes {
 		util.LogDebug(pgid, n.bindex.nodes[pgid].inodes)
@@ -215,37 +216,12 @@ func (n *node) del(key []byte) {
 	if index >= len(n.inodes) || !bytes.Equal(n.inodes[index].key, key) {
 		return
 	}
-	var minNode *node
-	{
-		var n *node = n.bindex.root
-		for {
-			if n.isLeaf {
-				minNode = n
-				util.LogDebug("minNode:", minNode.pgid)
-				break
-			} else {
-				n = n.childAt(0)
-			}
-		}
-	}
-	{
-		if minNode != nil {
-			util.LogDebug("compare", string(minNode.inodes[0].key), string(key))
-			if bytes.Compare(minNode.inodes[0].key, key) == 0 {
-				var n *node = minNode
-				for {
-					if n.parent == nil {
-						break
-					} else {
-						n = n.parent
-						util.LogDebug("replace min:", minNode.inodes[1].key)
-						copy(n.inodes[0].key, minNode.inodes[1].key)
-					}
-				}
-			}
-		}
+	if n == n.bindex.minNode() {
+		n.bindex.adjustMinKey(n, key)
 	}
 	n.inodes = append(n.inodes[:index], n.inodes[index+1:]...)
+	n.bindex.uncommited[n.pgid] = n
+	util.LogDebug("del:", n.pgid, n)
 }
 
 func (n *node) rebalanceAfterDelete() {
@@ -272,17 +248,25 @@ func (n *node) rebalanceAfterDelete() {
 					child.parent = n
 				}
 			}
-			child.parent = nil
 			delete(n.bindex.nodes, child.pgid)
-			n.write()
-			n.bindex.meta.write(n.bindex)
+			delete(n.bindex.uncommited, child.pgid)
+			n.bindex.uncommited[n.pgid] = n
 		}
+		util.LogDebug("-----------------------rebalance end--------------------")
+		for pgid, _ := range n.bindex.nodes {
+			util.LogDebug(pgid, n.bindex.nodes[pgid].inodes)
+		}
+		for pgid, _ := range n.bindex.nodes {
+			util.LogDebug(pgid, n.bindex.nodes[pgid].children)
+		}
+		n.bindex.dump()
 		return
 	}
 	if len(n.inodes) == 0 {
 		n.parent.del(n.key)
 		n.parent.removeChild(n)
 		delete(n.bindex.nodes, n.pgid)
+		delete(n.bindex.uncommited, n.pgid)
 		n.parent.rebalanceAfterDelete()
 		return
 	}
@@ -305,6 +289,8 @@ func (n *node) rebalanceAfterDelete() {
 		n.parent.del(target.key)
 		n.parent.removeChild(target)
 		delete(n.bindex.nodes, target.pgid)
+		delete(n.bindex.uncommited, target.pgid)
+		n.bindex.uncommited[n.pgid] = n
 	} else {
 		for _, inode := range n.inodes {
 			if child, ok := n.bindex.nodes[inode.pgid]; ok {
@@ -317,11 +303,10 @@ func (n *node) rebalanceAfterDelete() {
 		n.parent.del(n.key)
 		n.parent.removeChild(n)
 		delete(n.bindex.nodes, n.pgid)
+		delete(n.bindex.uncommited, n.pgid)
+		n.bindex.uncommited[target.pgid] = target
 	}
-	n.write()
-	target.write()
-	n.parent.write()
-	n.bindex.meta.write(n.bindex)
+	n.bindex.uncommited[n.parent.pgid] = n.parent
 	util.LogDebug("-----------------------rebalance end--------------------")
 	for pgid, _ := range n.bindex.nodes {
 		util.LogDebug(pgid, n.bindex.nodes[pgid].inodes)
@@ -358,19 +343,16 @@ func (n *node) read(p *page) {
 
 func (n *node) write() error {
 	buf := n.bindex.pagePool.Get().([]byte)
-	p := (*page)(unsafe.Pointer(&buf[0]))
+	p := n.bindex.pageInBuffer(buf, pgid(0))
 	p.id = n.pgid
 	if n.isLeaf {
 		p.flags |= LeafPageFlag
 	} else {
 		p.flags |= BranchPageFlag
 	}
-	if len(n.inodes) >= 0xFFFF {
-		panic(fmt.Sprintf("inode overflow: %d (pgid=%d)", len(n.inodes), p.id))
-	}
 	p.count = uint16(len(n.inodes))
 	if p.count == 0 {
-		return nil
+		n.bindex.pagePool.Put(buf)
 	}
 	b := (*[MaxMapSize]byte)(unsafe.Pointer(&p.ptr))[n.pageElementSize()*len(n.inodes):]
 	for i, item := range n.inodes {
@@ -394,20 +376,17 @@ func (n *node) write() error {
 		copy(b[0:], item.value)
 		b = b[vlen:]
 	}
+	p.dump()
 	ptr := (*[MaxMapSize]byte)(unsafe.Pointer(p))
 	buff := ptr[:n.bindex.pageSize]
 	offset := int64(n.pgid) * int64(n.bindex.pageSize)
 	if _, err := n.bindex.file.WriteAt(buff, offset); err != nil {
 		return err
 	}
-	if err := n.bindex.file.Sync(); err != nil {
-		return err
-	}
 	return nil
 }
 
 func (n *node) removeChild(target *node) {
-	util.LogDebug("remove:", n, target)
 	for i, child := range n.children {
 		if child == target {
 			n.children = append(n.children[:i], n.children[i+1:]...)

@@ -18,7 +18,12 @@ func TestBIndex(t *testing.T) {
 	//for i := 10; i <= 15; i++ {
 	//	b.Delete([]byte("hello" + strconv.Itoa(i)))
 	//}
-	for i := 16; i <= 20; i++ {
-		util.LogDebug(string(b.Get([]byte("hello" + strconv.Itoa(i)))))
-	}
+	//for i := 16; i <= 20; i++ {
+	//	util.LogDebug(string(b.Get([]byte("hello" + strconv.Itoa(i)))))
+	//}
+	//for i := 16; i <= 20; i++ {
+	//	b.Delete([]byte("hello" + strconv.Itoa(i)))
+	//}
+	//b.Delete([]byte("hello" + strconv.Itoa(20)))
+	util.LogDebug(string(b.Get([]byte("hello" + strconv.Itoa(20)))))
 }
