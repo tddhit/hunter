@@ -16,7 +16,7 @@ const (
 )
 
 var logger = log.New(os.Stderr, "", log.LstdFlags|log.Lshortfile)
-var logLevel = DEBUG
+var logLevel = INFO
 
 func InitLogger(logPath string, logLevel int) {
 	if logPath != "" {
@@ -63,10 +63,17 @@ func LogWarn(format string, v ...interface{}) {
 	}
 }
 
-func LogInfo(format string, v ...interface{}) {
+func LogInfof(format string, v ...interface{}) {
 	if logLevel <= INFO {
 		format = "[INFO] " + format
 		logger.Output(2, fmt.Sprintf(format, v...))
+	}
+}
+
+func LogInfo(v ...interface{}) {
+	if logLevel <= INFO {
+		s := "[INFO] " + fmt.Sprintln(v...)
+		logger.Output(2, s)
 	}
 }
 

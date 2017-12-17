@@ -2,13 +2,15 @@ package main
 
 import (
 	"bufio"
-	"fmt"
+	"bytes"
+	"encoding/binary"
 	"os"
 	"reflect"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/tddhit/hunter/bindex"
 	"github.com/tddhit/hunter/indexer"
 	"github.com/tddhit/hunter/types"
 	"github.com/tddhit/hunter/util"
@@ -17,6 +19,27 @@ import (
 const (
 	TimeFormat = "2006/01/02"
 )
+
+func flushIndex(idx *indexer.Indexer, bindex *bindex.BIndex, invertedFile string) {
+	file, err := os.OpenFile(invertedFile, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0666)
+	if err != nil {
+		panic(err)
+	}
+	var id int64
+	for k, v := range idx.Dict {
+		bindex.Put([]byte(k), []byte(strconv.FormatInt(id, 10)))
+		util.LogInfo(k, strconv.FormatInt(id, 10))
+		for e := v.Front(); e != nil; e = e.Next() {
+			posting := *e.Value.(*types.Posting)
+			util.LogInfo(posting.DocId)
+			buf := new(bytes.Buffer)
+			binary.Write(buf, binary.LittleEndian, posting.DocId)
+			file.WriteAt(buf.Bytes(), id*8)
+			id++
+		}
+	}
+	file.Close()
+}
 
 func indexDocument(idx *indexer.Indexer, documentPath string) {
 	var docId uint64 = 0
@@ -55,15 +78,8 @@ func indexDocument(idx *indexer.Indexer, documentPath string) {
 				}
 			}
 		}
-		fmt.Println(doc.Title)
 		idx.IndexDocument(doc)
 		docId++
-	}
-	for k, v := range idx.Dict {
-		fmt.Println(k)
-		for e := v.Front(); e != nil; e = e.Next() {
-			fmt.Println(*e.Value.(*types.Posting))
-		}
 	}
 }
 
@@ -71,7 +87,14 @@ func main() {
 	dictPath := os.Args[1]
 	stopwordsPath := os.Args[2]
 	documentPath := os.Args[3]
+	vocabFile := os.Args[4]
+	invertedFile := os.Args[5]
 	idx := indexer.New(dictPath)
+	bnx, err := bindex.New(vocabFile, false)
+	if err != nil {
+		panic(err)
+	}
 	util.InitStopwords(stopwordsPath)
 	indexDocument(idx, documentPath)
+	flushIndex(idx, bnx, invertedFile)
 }

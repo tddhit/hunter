@@ -27,9 +27,9 @@ func (n node) dump() {
 	util.LogDebugf("[NODE %d {type=%s count=%d size=%d}]", n.pgid, typ, len(n.inodes), n.size())
 	for _, item := range n.inodes {
 		if n.isLeaf {
-			util.LogDebugf("+L %s -> %s", item.key, item.value)
+			util.LogInfof("+L %s -> %s", item.key, item.value)
 		} else {
-			util.LogDebugf("+B %s -> %d", item.key, item.pgid)
+			util.LogInfof("+B %s -> %d", item.key, item.pgid)
 		}
 	}
 }

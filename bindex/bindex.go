@@ -71,8 +71,8 @@ func New(path string, readOnly bool) (*BIndex, error) {
 	if err := b.flock(!readOnly); err != nil {
 		return nil, err
 	}
-	//b.pageSize = os.Getpagesize()
-	b.pageSize = 128
+	b.pageSize = os.Getpagesize()
+	//b.pageSize = 128
 	b.pagePool = sync.Pool{
 		New: func() interface{} {
 			return make([]byte, b.pageSize)
@@ -162,6 +162,32 @@ func (b *BIndex) init() error {
 
 func (b *BIndex) pageInBuffer(buf []byte, id pgid) *page {
 	return (*page)(unsafe.Pointer(&buf[id*pgid(b.pageSize)]))
+}
+
+func (b *BIndex) Traverse() {
+	l := list.New()
+	root := b.node(b.root, nil)
+	if root == nil {
+		return
+	}
+	l.PushBack(root)
+	for {
+		if l.Len() > 0 {
+			e := l.Front()
+			n := e.Value.(*node)
+			if n.isLeaf {
+				n.dump()
+			} else {
+				for i := 0; i < len(n.inodes); i++ {
+					node := b.node(n.inodes[i].pgid, n)
+					l.PushBack(node)
+				}
+			}
+			l.Remove(e)
+		} else {
+			break
+		}
+	}
 }
 
 func (b *BIndex) dump() {
@@ -341,13 +367,6 @@ func (b *BIndex) pageNode(id pgid) (*page, *node) {
 
 func (b *BIndex) commit() error {
 	util.LogDebug("commit start:", b.uncommited)
-	//for i := pgid(1); i <= b.maxPgid; i++ {
-	//	p := b.page(i)
-	//	p.dump()
-	//}
-	for pgid, _ := range b.nodes {
-		util.LogDebug(pgid, string(b.nodes[pgid].key), b.nodes[pgid].inodes)
-	}
 	buf := make([]byte, b.pageSize)
 	p := b.pageInBuffer(buf, pgid(0))
 	p.id = pgid(0)
@@ -374,13 +393,13 @@ func (b *BIndex) commit() error {
 	}
 	b.uncommited = make(map[pgid]*node)
 	util.LogDebug("commit end")
-	for i := pgid(1); i <= b.maxPgid; i++ {
-		p := b.page(i)
-		p.dump()
-	}
-	for pgid, _ := range b.nodes {
-		util.LogDebug(pgid, string(b.nodes[pgid].key), b.nodes[pgid].inodes)
-	}
+	//for i := pgid(1); i <= b.maxPgid; i++ {
+	//	p := b.page(i)
+	//	p.dump()
+	//}
+	//for pgid, _ := range b.nodes {
+	//	util.LogDebug(pgid, string(b.nodes[pgid].key), b.nodes[pgid].inodes)
+	//}
 	return nil
 }
 
