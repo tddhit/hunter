@@ -25,18 +25,25 @@ func flushIndex(idx *indexer.Indexer, bindex *bindex.BIndex, invertedFile string
 	if err != nil {
 		panic(err)
 	}
-	var id int64
 	for k, v := range idx.Dict {
-		bindex.Put([]byte(k), []byte(strconv.FormatInt(id, 10)))
-		util.LogInfo(k, strconv.FormatInt(id, 10))
+		buf := new(bytes.Buffer)
+		binary.Write(buf, binary.LittleEndian, uint64(v.Len()))
 		for e := v.Front(); e != nil; e = e.Next() {
-			posting := *e.Value.(*types.Posting)
-			util.LogInfo(posting.DocId)
-			buf := new(bytes.Buffer)
-			binary.Write(buf, binary.LittleEndian, posting.DocId)
-			file.WriteAt(buf.Bytes(), id*8)
-			id++
+			if posting, ok := e.Value.(*types.Posting); ok {
+				binary.Write(buf, binary.LittleEndian, posting.DocId)
+				binary.Write(buf, binary.LittleEndian, posting.Freq)
+				for _, loc := range posting.Loc {
+					binary.Write(buf, binary.LittlenEndian, loc)
+				}
+			} else {
+				panic(err)
+			}
 		}
+		n, err := file.Write(buf.Bytes())
+		if n != buf.Len() || err != nil {
+			util.LogFatalf("flushIndex fail:n=%d,len=%d,err=%s\n", n, buf.Len(), err.String())
+		}
+		bindex.Put([]byte(k), []byte(strconv.FormatInt(n, 10)))
 	}
 	file.Close()
 }

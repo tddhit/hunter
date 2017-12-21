@@ -10,4 +10,6 @@ type Document struct {
 
 type Posting struct {
 	DocId uint64
+	Freq  uint32
+	Loc   []uint32
 }
