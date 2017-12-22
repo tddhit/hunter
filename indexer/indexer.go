@@ -10,54 +10,48 @@ import (
 	"syscall"
 	"unsafe"
 
-	"github.com/huichen/sego"
-
 	"github.com/tddhit/bindex"
+	"github.com/tddhit/tools/log"
+
 	"github.com/tddhit/hunter/types"
-	"github.com/tddhit/hunter/util"
 )
 
 const (
-	BM25_K1 float32 = 1.2
-	BM25_B  float32 = 0.75
+	BM25_K1    float32 = 1.2
+	BM25_B     float32 = 0.75
+	MaxMapSize         = 1 << 37
 )
 
 type Indexer struct {
-	seg          sego.Segmenter
-	Dict         map[string]*list.List
-	dict         *bindex.BIndex
-	invertedFile *os.File
-	invertedRef  []byte
-	numDocs      uint64
-	docLength    map[uint64]uint32
-	avgDocLength float32
+	DocLength    map[uint64]uint32
+	NumDocs      uint64
+	AvgDocLength uint32
+	InvertList   map[string]*list.List
+	invertRef    []byte
+	invertFile   *os.File
+	meta         *bindex.BIndex
+	vocab        *bindex.BIndex
 }
 
-func New(segPath string) *Indexer {
+func New() *Indexer {
 	idx := &Indexer{
-		Dict: make(map[string]*list.List),
+		InvertList: make(map[string]*list.List),
+		DocLength:  make(map[uint64]uint32),
 	}
-	idx.seg.LoadDictionary(segPath)
 	return idx
 }
 
-func (idx *Indexer) IndexDocument(doc *types.Document) {
-	segs := idx.seg.Segment([]byte(doc.Title))
+func (idx *Indexer) Index(doc *types.Document) {
 	var loc uint32
-	for _, seg := range segs {
-		term := seg.Token().Text()
-		if term == " " {
-			continue
+	for _, term := range doc.Terms {
+		var (
+			lastestPosting *types.Posting
+			posting        *types.Posting
+		)
+		if _, ok := idx.InvertList[term]; !ok {
+			idx.InvertList[term] = list.New()
 		}
-		if _, ok := util.Stopwords[term]; ok {
-			continue
-		}
-		if _, ok := idx.Dict[term]; !ok {
-			idx.Dict[term] = list.New()
-		}
-		var lastestPosting *types.Posting
-		var posting *types.Posting
-		postingList := idx.Dict[term]
+		postingList := idx.InvertList[term]
 		elem := postingList.Back()
 		if elem != nil {
 			if p, ok := elem.Value.(*types.Posting); ok {
@@ -72,38 +66,76 @@ func (idx *Indexer) IndexDocument(doc *types.Document) {
 		posting.DocId = doc.Id
 		posting.Freq++
 		posting.Loc = append(posting.Loc, loc)
-		idx.Dict[term].PushBack(posting)
+		postingList.PushBack(posting)
 		loc++
 	}
 }
 
-type Document struct {
-	docId uint64
-	bm25  float32
-	terms []string
+func (idx *Indexer) LoadIndex(metaPath, vocabPath, invertPath string) {
+	invertFile, err := os.Open(invertPath)
+	if err != nil {
+		log.Panic(err)
+	}
+	buf, err := syscall.Mmap(int(invertFile.Fd()), 0, MaxMapSize, syscall.PROT_READ, syscall.MAP_SHARED)
+	if err != nil {
+		log.Panic(err)
+	}
+	if _, _, err := syscall.Syscall(syscall.SYS_MADVISE, uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)), uintptr(syscall.MADV_RANDOM)); err != 0 {
+		log.Panic(err)
+	}
+	meta, err := bindex.New(metaPath, true)
+	if err != nil {
+		log.Panic(err)
+	}
+	vocab, err := bindex.New(vocabPath, true)
+	if err != nil {
+		log.Panic(err)
+	}
+	idx.invertFile = invertFile
+	idx.invertRef = buf
+	idx.meta = meta
+	idx.vocab = vocab
+	numDocs := idx.meta.Get([]byte("NumDocs"))
+	if numDocs == nil {
+		log.Fatal("NumDocs is nil.")
+	}
+	nd, err := strconv.ParseUint(string(numDocs), 10, 64)
+	if err != nil {
+		log.Panic(err)
+	}
+	idx.NumDocs = nd
+	avgDocLength := idx.meta.Get([]byte("AvgDocLength"))
+	if avgDocLength == nil {
+		log.Panic(err)
+	}
+	avdl, err := strconv.ParseUint(string(avgDocLength), 10, 32)
+	if err != nil {
+		log.Panic(err)
+	}
+	idx.AvgDocLength = uint32(avdl)
 }
 
-func (idx *Indexer) Search(keys []string) (res []Document) {
+func (idx *Indexer) Search(keys []string) (res []types.Document) {
 	term2Docs := make(map[string]int)
 	doc2Terms := make(map[uint64]map[string]uint32)
 	for _, key := range keys {
 		docs, freqs := idx.lookup([]byte(key))
 		term2Docs[key] = len(docs)
-		for i, doc := range docs {
-			if _, ok := doc2Terms[doc]; !ok {
-				doc2Terms[doc] = make(map[string]uint32)
+		for i, docId := range docs {
+			if _, ok := doc2Terms[docId]; !ok {
+				doc2Terms[docId] = make(map[string]uint32)
 			}
-			doc2Terms[doc][key] = freqs[i]
+			doc2Terms[docId][key] = freqs[i]
 		}
 	}
 	for docId, terms := range doc2Terms {
-		d := Document{
-			docId: docId,
+		d := types.Document{
+			Id: docId,
 		}
 		for term, freq := range terms {
-			idf := float32(math.Log2(float64(idx.numDocs)/float64(term2Docs[term]) + 1))
-			d.bm25 += idf * float32(freq) * (BM25_K1 + 1) / (float32(freq) + BM25_K1*(1-BM25_B+BM25_B*float32(idx.docLength[docId])/idx.avgDocLength))
-			d.terms = append(d.terms, term)
+			idf := float32(math.Log2(float64(idx.NumDocs)/float64(term2Docs[term]) + 1))
+			d.BM25 += idf * float32(freq) * (BM25_K1 + 1) / (float32(freq) + BM25_K1*(1-BM25_B+BM25_B*float32(idx.DocLength[docId])/float32(idx.AvgDocLength)))
+			d.Terms = append(d.Terms, term)
 		}
 		res = append(res, d)
 	}
@@ -111,36 +143,27 @@ func (idx *Indexer) Search(keys []string) (res []Document) {
 }
 
 func (idx *Indexer) lookup(key []byte) (docs []uint64, freqs []uint32) {
-	value := idx.dict.Get(key)
+	value := idx.vocab.Get(key)
+	if value == nil {
+		return nil, nil
+	}
 	loc, err := strconv.ParseInt(string(value), 10, 64)
 	if err != nil {
-		util.LogError(err.Error())
-		return
+		log.Error(err.Error())
+		return nil, nil
 	}
 	var count uint64
-	buf := bytes.NewBuffer(idx.invertedRef[loc : loc+8 : loc+8])
+	buf := bytes.NewBuffer(idx.invertRef[loc : loc+8 : loc+8])
 	binary.Read(buf, binary.LittleEndian, &count)
 	for i := 0; i < int(count); i++ {
 		var docId uint64
-		buf := bytes.NewBuffer(idx.invertedRef[loc+8 : loc+16 : loc+16])
+		buf := bytes.NewBuffer(idx.invertRef[loc+8 : loc+16 : loc+16])
 		binary.Read(buf, binary.LittleEndian, &docId)
 		docs = append(docs, docId)
 		var freq uint32
-		buf = bytes.NewBuffer(idx.invertedRef[loc+16 : loc+20 : loc+20])
+		buf = bytes.NewBuffer(idx.invertRef[loc+16 : loc+20 : loc+20])
 		binary.Read(buf, binary.LittleEndian, &freq)
 		freqs = append(freqs, freq)
 	}
 	return docs, freqs
-}
-
-func (idx *Indexer) mmap(size int) error {
-	buf, err := syscall.Mmap(int(idx.invertedFile.Fd()), 0, size, syscall.PROT_READ, syscall.MAP_SHARED)
-	if err != nil {
-		return err
-	}
-	if _, _, err := syscall.Syscall(syscall.SYS_MADVISE, uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)), uintptr(syscall.MADV_RANDOM)); err != 0 {
-		return err
-	}
-	idx.invertedRef = buf
-	return nil
 }

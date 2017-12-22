@@ -1,4 +1,4 @@
-package main
+package builder
 
 import (
 	"bytes"
@@ -11,7 +11,7 @@ import (
 	"github.com/tddhit/hunter/util"
 )
 
-func TestIndexer(t *testing.T) {
+func TestBuilder(t *testing.T) {
 	b, err := bindex.New("vocab.dat", false)
 	if err != nil {
 		panic(err)

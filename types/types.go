@@ -1,11 +1,9 @@
 package types
 
-import ()
-
 type Document struct {
-	Id      uint64
-	Title   string
-	Content string
+	Id    uint64
+	BM25  float32
+	Terms []string
 }
 
 type Posting struct {

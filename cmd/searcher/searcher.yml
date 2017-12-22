@@ -1,0 +1,6 @@
+loglevel: 2 #Debug(1),INFO(2),WARNING(3),ERROR(4),FATAL(5),PANIC(6)
+segment: '/Users/tangdandang/code/go/src/github.com/tddhit/hunter/dict/segment.txt'
+stopword: '/Users/tangdandang/code/go/src/github.com/tddhit/hunter/dict/stopword.txt'
+meta: '/Users/tangdandang/code/go/src/github.com/tddhit/hunter/data/meta.bin'
+vocab: '/Users/tangdandang/code/go/src/github.com/tddhit/hunter/data/vocab.bin'
+invert: '/Users/tangdandang/code/go/src/github.com/tddhit/hunter/data/invert.bin'
