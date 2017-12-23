@@ -23,7 +23,6 @@ const (
 )
 
 type Indexer struct {
-	DocLength    map[uint64]uint32
 	NumDocs      uint64
 	AvgDocLength uint32
 	InvertList   map[string]*list.List
@@ -36,7 +35,6 @@ type Indexer struct {
 func New() *Indexer {
 	idx := &Indexer{
 		InvertList: make(map[string]*list.List),
-		DocLength:  make(map[uint64]uint32),
 	}
 	return idx
 }
@@ -62,11 +60,11 @@ func (idx *Indexer) Index(doc *types.Document) {
 			posting = lastestPosting
 		} else {
 			posting = &types.Posting{}
+			postingList.PushBack(posting)
 		}
 		posting.DocId = doc.Id
 		posting.Freq++
 		posting.Loc = append(posting.Loc, loc)
-		postingList.PushBack(posting)
 		loc++
 	}
 }
@@ -133,9 +131,20 @@ func (idx *Indexer) Search(keys []string) (res []types.Document) {
 			Id: docId,
 		}
 		for term, freq := range terms {
+			value := idx.meta.Get([]byte(strconv.FormatUint(docId, 10)))
+			if value == nil {
+				log.Errorf("Get doc(%d) length fail\n", docId)
+				continue
+			}
+			docLength, err := strconv.ParseUint(string(value), 10, 32)
+			if err != nil {
+				log.Error(string(value), err)
+				continue
+			}
 			idf := float32(math.Log2(float64(idx.NumDocs)/float64(term2Docs[term]) + 1))
-			d.BM25 += idf * float32(freq) * (BM25_K1 + 1) / (float32(freq) + BM25_K1*(1-BM25_B+BM25_B*float32(idx.DocLength[docId])/float32(idx.AvgDocLength)))
+			d.BM25 += idf * float32(freq) * (BM25_K1 + 1) / (float32(freq) + BM25_K1*(1-BM25_B+BM25_B*float32(docLength)/float32(idx.AvgDocLength)))
 			d.Terms = append(d.Terms, term)
+			log.Debugf("docId:%d NumDocs:%d docs:%d, freq:%d, docLength:%d, avdl:%d", docId, idx.NumDocs, term2Docs[term], freq, docLength, idx.AvgDocLength)
 		}
 		res = append(res, d)
 	}
@@ -147,23 +156,40 @@ func (idx *Indexer) lookup(key []byte) (docs []uint64, freqs []uint32) {
 	if value == nil {
 		return nil, nil
 	}
-	loc, err := strconv.ParseInt(string(value), 10, 64)
+	log.Debug("lookup:", string(key), string(value))
+	loc, err := strconv.ParseUint(string(value), 10, 64)
 	if err != nil {
 		log.Error(err.Error())
 		return nil, nil
 	}
 	var count uint64
 	buf := bytes.NewBuffer(idx.invertRef[loc : loc+8 : loc+8])
-	binary.Read(buf, binary.LittleEndian, &count)
+	err = binary.Read(buf, binary.LittleEndian, &count)
+	if err != nil {
+		log.Error(err)
+	}
+	log.Debug("count:", count)
+	loc += 8
 	for i := 0; i < int(count); i++ {
-		var docId uint64
-		buf := bytes.NewBuffer(idx.invertRef[loc+8 : loc+16 : loc+16])
-		binary.Read(buf, binary.LittleEndian, &docId)
+		var (
+			docId uint64
+			freq  uint32
+		)
+		buf := bytes.NewBuffer(idx.invertRef[loc : loc+8 : loc+8])
+		err := binary.Read(buf, binary.LittleEndian, &docId)
+		if err != nil {
+			log.Fatal(err)
+		}
+		loc += 8
+		buf = bytes.NewBuffer(idx.invertRef[loc : loc+4 : loc+4])
+		err = binary.Read(buf, binary.LittleEndian, &freq)
+		if err != nil {
+			log.Fatal(err)
+		}
+		loc += 4
 		docs = append(docs, docId)
-		var freq uint32
-		buf = bytes.NewBuffer(idx.invertRef[loc+16 : loc+20 : loc+20])
-		binary.Read(buf, binary.LittleEndian, &freq)
 		freqs = append(freqs, freq)
+		log.Debugf("docId:%d freq:%d\n", docId, freq)
 	}
 	return docs, freqs
 }

@@ -36,12 +36,17 @@ type Builder struct {
 	vocab   *bindex.BIndex
 	meta    *bindex.BIndex
 	invert  *os.File
+
+	NumDocs      uint64
+	AvgDocLength uint32
+	DocLength    map[uint64]uint32
 }
 
 func New(option *Option) *Builder {
 	b := &Builder{
-		opt:     option,
-		indexer: indexer.New(),
+		opt:       option,
+		indexer:   indexer.New(),
+		DocLength: make(map[uint64]uint32),
 	}
 	meta, err := bindex.New(option.MetaPath, false)
 	if err != nil {
@@ -72,13 +77,19 @@ func New(option *Option) *Builder {
 }
 
 func (b *Builder) Build() {
-	var docId uint64 = 0
+	var (
+		docId          uint64 = 0
+		totalDocLength uint64 = 0
+	)
 	scanner := bufio.NewScanner(b.doc)
 	buf := make([]byte, 1024*1024)
 	scanner.Buffer(buf, cap(buf))
 	for scanner.Scan() {
 		content := scanner.Text()
 		terms := b.proc.Segment([]byte(content))
+		docLength := len(terms)
+		totalDocLength += uint64(docLength)
+		b.DocLength[docId] = uint32(docLength)
 		doc := &types.Document{
 			Id:    docId,
 			Terms: terms,
@@ -86,22 +97,33 @@ func (b *Builder) Build() {
 		b.indexer.Index(doc)
 		docId++
 	}
+	b.NumDocs = docId
+	b.AvgDocLength = uint32(totalDocLength / docId)
 }
 
 func (b *Builder) Dump() {
-	b.meta.Put([]byte("AvgDocLength"), []byte(strconv.FormatUint(uint64(b.indexer.AvgDocLength), 10)))
-	b.meta.Put([]byte("NumDocs"), []byte(strconv.FormatUint(b.indexer.NumDocs, 10)))
-	for docId, length := range b.indexer.DocLength {
+	b.meta.Put([]byte("NumDocs"), []byte(strconv.FormatUint(b.NumDocs, 10)))
+	b.meta.Put([]byte("AvgDocLength"), []byte(strconv.FormatUint(uint64(b.AvgDocLength), 10)))
+	for docId, length := range b.DocLength {
 		b.meta.Put([]byte(strconv.FormatUint(docId, 10)), []byte(strconv.FormatUint(uint64(length), 10)))
 	}
 	var loc uint64
 	for term, postingList := range b.indexer.InvertList {
 		buf := new(bytes.Buffer)
-		binary.Write(buf, binary.LittleEndian, uint64(postingList.Len()))
+		err := binary.Write(buf, binary.LittleEndian, uint64(postingList.Len()))
+		if err != nil {
+			log.Fatal(err)
+		}
 		for e := postingList.Front(); e != nil; e = e.Next() {
 			if posting, ok := e.Value.(*types.Posting); ok {
-				binary.Write(buf, binary.LittleEndian, posting.DocId)
-				binary.Write(buf, binary.LittleEndian, posting.Freq)
+				err := binary.Write(buf, binary.LittleEndian, posting.DocId)
+				if err != nil {
+					log.Fatal(err)
+				}
+				err = binary.Write(buf, binary.LittleEndian, posting.Freq)
+				if err != nil {
+					log.Fatal(err)
+				}
 			} else {
 				log.Panicf("convert fail:%#v\n", e)
 			}
