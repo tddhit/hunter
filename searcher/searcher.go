@@ -5,6 +5,7 @@ import (
 
 	"github.com/tddhit/hunter/indexer"
 	"github.com/tddhit/hunter/preprocessor"
+	"github.com/tddhit/hunter/types"
 )
 
 type Option struct {
@@ -33,8 +34,7 @@ func New(option *Option) *Searcher {
 	return s
 }
 
-func (s *Searcher) Search(query []byte) {
+func (s *Searcher) Search(query []byte, topk int) []*types.Document {
 	terms := s.proc.Segment(query)
-	res := s.indexer.Search(terms)
-	log.Debug(res)
+	return s.indexer.Search(terms, topk)
 }

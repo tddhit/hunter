@@ -1,7 +1,6 @@
 package builder
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/binary"
 	"os"
@@ -11,6 +10,7 @@ import (
 	"github.com/tddhit/tools/log"
 
 	"github.com/tddhit/hunter/indexer"
+	"github.com/tddhit/hunter/internal/datasource"
 	"github.com/tddhit/hunter/preprocessor"
 	"github.com/tddhit/hunter/types"
 )
@@ -22,20 +22,19 @@ const (
 type Option struct {
 	SegmentPath  string
 	StopwordPath string
-	DocumentPath string
 	MetaPath     string
 	VocabPath    string
 	InvertPath   string
 }
 
 type Builder struct {
-	opt     *Option
-	doc     *os.File
-	proc    *preprocessor.Preprocessor
-	indexer *indexer.Indexer
-	vocab   *bindex.BIndex
-	meta    *bindex.BIndex
-	invert  *os.File
+	opt        *Option
+	proc       *preprocessor.Preprocessor
+	indexer    *indexer.Indexer
+	vocab      *bindex.BIndex
+	meta       *bindex.BIndex
+	invert     *os.File
+	dataSource datasource.DataSource
 
 	NumDocs      uint64
 	AvgDocLength uint32
@@ -60,10 +59,6 @@ func New(option *Option) *Builder {
 	if err != nil {
 		log.Panic(err)
 	}
-	doc, err := os.Open(option.DocumentPath)
-	if err != nil {
-		log.Panic(err)
-	}
 	proc, err := preprocessor.New(option.SegmentPath, option.StopwordPath)
 	if err != nil {
 		log.Panic(err)
@@ -71,34 +66,28 @@ func New(option *Option) *Builder {
 	b.meta = meta
 	b.vocab = vocab
 	b.invert = invert
-	b.doc = doc
 	b.proc = proc
 	return b
 }
 
+func (b *Builder) SetSource(source datasource.DataSource) {
+	b.dataSource = source
+}
+
 func (b *Builder) Build() {
 	var (
-		docId          uint64 = 0
 		totalDocLength uint64 = 0
 	)
-	scanner := bufio.NewScanner(b.doc)
-	buf := make([]byte, 1024*1024)
-	scanner.Buffer(buf, cap(buf))
-	for scanner.Scan() {
-		content := scanner.Text()
-		terms := b.proc.Segment([]byte(content))
+	for doc := range b.dataSource.ReadChan() {
+		terms := b.proc.Segment([]byte(doc.Content))
 		docLength := len(terms)
 		totalDocLength += uint64(docLength)
-		b.DocLength[docId] = uint32(docLength)
-		doc := &types.Document{
-			Id:    docId,
-			Terms: terms,
-		}
+		b.DocLength[doc.Id] = uint32(docLength)
+		doc.Terms = terms
 		b.indexer.Index(doc)
-		docId++
+		b.NumDocs++
 	}
-	b.NumDocs = docId
-	b.AvgDocLength = uint32(totalDocLength / docId)
+	b.AvgDocLength = uint32(totalDocLength / b.NumDocs)
 }
 
 func (b *Builder) Dump() {

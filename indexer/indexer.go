@@ -2,6 +2,7 @@ package indexer
 
 import (
 	"bytes"
+	"container/heap"
 	"container/list"
 	"encoding/binary"
 	"math"
@@ -113,9 +114,12 @@ func (idx *Indexer) LoadIndex(metaPath, vocabPath, invertPath string) {
 	idx.AvgDocLength = uint32(avdl)
 }
 
-func (idx *Indexer) Search(keys []string) (res []types.Document) {
+func (idx *Indexer) Search(keys []string, topk int) (res []*types.Document) {
+	log.Error("search")
 	term2Docs := make(map[string]int)
 	doc2Terms := make(map[uint64]map[string]uint32)
+	docHeap := &DocHeap{}
+	heap.Init(docHeap)
 	for _, key := range keys {
 		docs, freqs := idx.lookup([]byte(key))
 		term2Docs[key] = len(docs)
@@ -127,7 +131,7 @@ func (idx *Indexer) Search(keys []string) (res []types.Document) {
 		}
 	}
 	for docId, terms := range doc2Terms {
-		d := types.Document{
+		d := &types.Document{
 			Id: docId,
 		}
 		for term, freq := range terms {
@@ -146,7 +150,13 @@ func (idx *Indexer) Search(keys []string) (res []types.Document) {
 			d.Terms = append(d.Terms, term)
 			log.Debugf("docId:%d NumDocs:%d docs:%d, freq:%d, docLength:%d, avdl:%d", docId, idx.NumDocs, term2Docs[term], freq, docLength, idx.AvgDocLength)
 		}
-		res = append(res, d)
+		heap.Push(docHeap, d)
+	}
+	docNum := docHeap.Len()
+	for topk > 0 && docNum > 0 {
+		res = append(res, heap.Pop(docHeap).(*types.Document))
+		topk--
+		docNum--
 	}
 	return res
 }
@@ -192,4 +202,22 @@ func (idx *Indexer) lookup(key []byte) (docs []uint64, freqs []uint32) {
 		log.Debugf("docId:%d freq:%d\n", docId, freq)
 	}
 	return docs, freqs
+}
+
+type DocHeap []*types.Document
+
+func (h DocHeap) Len() int           { return len(h) }
+func (h DocHeap) Less(i, j int) bool { return h[i].BM25 > h[j].BM25 }
+func (h DocHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+
+func (h *DocHeap) Push(x interface{}) {
+	*h = append(*h, x.(*types.Document))
+}
+
+func (h *DocHeap) Pop() interface{} {
+	old := *h
+	n := len(old)
+	x := old[n-1]
+	*h = old[0 : n-1]
+	return x
 }
