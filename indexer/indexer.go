@@ -204,6 +204,36 @@ func (idx *Indexer) lookup(key []byte) (docs []uint64, freqs []uint32) {
 	return docs, freqs
 }
 
+func (idx *Indexer) Reset() error {
+	idx.NumDocs = 0
+	idx.AvgDocLength = 0
+	idx.InvertList = make(map[string]*list.List)
+	if idx.invertRef != nil {
+		if err := syscall.Munmap(idx.invertRef); err != nil {
+			return err
+		}
+		idx.invertRef = nil
+	}
+	if idx.invertFile != nil {
+		idx.invertFile.Sync()
+		idx.invertFile.Close()
+		idx.invertFile = nil
+	}
+	if idx.meta != nil {
+		idx.meta.Close()
+		idx.meta = nil
+	}
+	if idx.vocab != nil {
+		idx.vocab.Close()
+		idx.vocab = nil
+	}
+	return nil
+}
+
+func (idx *Indexer) Close() {
+	idx.Reset()
+}
+
 type DocHeap []*types.Document
 
 func (h DocHeap) Len() int           { return len(h) }
