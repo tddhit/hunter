@@ -1,14 +1,15 @@
 package indexer
 
 import (
-	"bytes"
 	"container/heap"
 	"container/list"
 	"encoding/binary"
 	"errors"
+	"math"
 	"os"
 	"strconv"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"github.com/tddhit/bindex"
@@ -100,20 +101,19 @@ func (idx *Indexer) LoadIndex(vocabPath, invertPath string) {
 
 func (idx *Indexer) Search(keys []string, topk int32) (res []*types.Document) {
 	log.Info("Start Search")
-	doc2Tokens := make(docT)
+	ts := time.Now()
+	doc2BM25 := make(map[uint64]float32)
 	docHeap := &DocHeap{}
 	heap.Init(docHeap)
 	log.Info("phase 1")
 	for _, key := range keys {
-		idx.lookup([]byte(key), doc2Tokens)
+		idx.lookup([]byte(key), doc2BM25)
 	}
 	log.Info("phase 2")
-	for docID, tokens := range doc2Tokens {
+	for docID, bm25 := range doc2BM25 {
 		d := &types.Document{
-			ID: docID,
-		}
-		for _, bm25 := range tokens {
-			d.BM25 += bm25
+			ID:   docID,
+			BM25: bm25,
 		}
 		heap.Push(docHeap, d)
 	}
@@ -125,13 +125,11 @@ func (idx *Indexer) Search(keys []string, topk int32) (res []*types.Document) {
 		topk--
 		docNum--
 	}
-	log.Info("End Search")
+	log.Info("End Search", time.Since(ts), docNum)
 	return res
 }
 
-type docT map[uint64]map[string]float32 // map[docID]map[term]bm25
-
-func (idx *Indexer) lookup(key []byte, doc2Tokens docT) error {
+func (idx *Indexer) lookup(key []byte, doc2BM25 map[uint64]float32) error {
 	value := idx.vocab.Get(key)
 	if value == nil {
 		log.Error(errNotFoundKey, string(key))
@@ -144,38 +142,17 @@ func (idx *Indexer) lookup(key []byte, doc2Tokens docT) error {
 		return err
 	}
 	var count uint64
-	buf := bytes.NewBuffer(idx.invertRef[loc : loc+8 : loc+8])
-	err = binary.Read(buf, binary.LittleEndian, &count)
-	if err != nil {
-		log.Error(err)
-	}
+	count = binary.LittleEndian.Uint64(idx.invertRef[loc : loc+8 : loc+8])
 	log.Debug("count:", count)
 	loc += 8
-	log.Info("start scan", count)
 	for i := uint64(0); i < count; i++ {
-		var (
-			docID uint64
-			bm25  float32
-		)
-		buf := bytes.NewBuffer(idx.invertRef[loc : loc+8 : loc+8])
-		err := binary.Read(buf, binary.LittleEndian, &docID)
-		if err != nil {
-			log.Fatal(err)
-		}
+		docID := binary.LittleEndian.Uint64(idx.invertRef[loc : loc+8 : loc+8])
 		loc += 8
-		buf = bytes.NewBuffer(idx.invertRef[loc : loc+4 : loc+4])
-		err = binary.Read(buf, binary.LittleEndian, &bm25)
-		if err != nil {
-			log.Fatal(err)
-		}
+		bits := binary.LittleEndian.Uint32(idx.invertRef[loc : loc+4 : loc+4])
+		bm25 := math.Float32frombits(bits)
 		loc += 4
-		if _, ok := doc2Tokens[docID]; !ok {
-			doc2Tokens[docID] = make(map[string]float32)
-		}
-		doc2Tokens[docID][string(key)] = bm25
-		log.Debugf("docID:%d bm25:%d\n", docID, bm25)
+		doc2BM25[docID] += bm25
 	}
-	log.Info("end scan")
 	return nil
 }
 
