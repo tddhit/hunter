@@ -23,7 +23,6 @@ func main() {
 	option := &builder.Option{
 		SegmentPath:  conf.SegmentPath,
 		StopwordPath: conf.StopwordPath,
-		DocumentPath: conf.DocumentPath,
 		MetaPath:     conf.MetaPath,
 		VocabPath:    conf.VocabPath,
 		InvertPath:   conf.InvertPath,

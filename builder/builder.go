@@ -24,7 +24,8 @@ const (
 type Option struct {
 	SegmentPath  string
 	StopwordPath string
-	MetaPath     string
+	Meta0Path    string
+	Meta1Path    string
 	VocabPath    string
 	InvertPath   string
 }
@@ -37,14 +38,16 @@ type Builder struct {
 
 	NumDocs      uint64
 	AvgDocLength uint32
-	DocLength    map[uint64]uint32
+	DocsLength   []struct {
+		id     uint64
+		length uint32
+	}
 }
 
 func New(option *Option) *Builder {
 	b := &Builder{
-		opt:       option,
-		indexer:   indexer.New(),
-		DocLength: make(map[uint64]uint32),
+		opt:     option,
+		indexer: indexer.New(),
 	}
 	proc, err := preprocessor.New(option.SegmentPath, option.StopwordPath)
 	if err != nil {
@@ -57,7 +60,7 @@ func New(option *Option) *Builder {
 func (b *Builder) Reset(source datasource.DataSource) {
 	b.NumDocs = 0
 	b.AvgDocLength = 0
-	b.DocLength = make(map[uint64]uint32)
+	b.DocsLength = b.DocsLength[:]
 	b.indexer.Reset()
 	b.dataSource = source
 }
@@ -70,7 +73,14 @@ func (b *Builder) Build() {
 		terms := b.proc.Segment([]byte(doc.Content))
 		docLength := len(terms)
 		totalDocLength += uint64(docLength)
-		b.DocLength[doc.Id] = uint32(docLength)
+		b.DocsLength = append(b.DocsLength, struct {
+			id     uint64
+			length uint32
+		}{
+			id:     doc.Id,
+			length: uint32(docLength),
+		})
+		doc.Id = b.NumDocs
 		doc.Terms = terms
 		b.indexer.Index(doc)
 		b.NumDocs++
@@ -81,8 +91,13 @@ func (b *Builder) Build() {
 
 func (b *Builder) Dump() {
 	// init file
-	metaPath := fmt.Sprintf("%s.%d.tmp", b.opt.MetaPath, rand.Int())
-	meta, err := bindex.New(metaPath, false)
+	meta0Path := fmt.Sprintf("%s.%d.tmp", b.opt.Meta0Path, rand.Int())
+	meta0, err := bindex.New(meta0Path, false)
+	if err != nil {
+		log.Fatal(err)
+	}
+	meta1Path := fmt.Sprintf("%s.%d.tmp", b.opt.Meta1Path, rand.Int())
+	meta1, err := os.OpenFile(meta1Path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -92,33 +107,48 @@ func (b *Builder) Dump() {
 		log.Fatal(err)
 	}
 	invertPath := fmt.Sprintf("%s.%d.tmp", b.opt.InvertPath, rand.Int())
-	invert, err := os.OpenFile(invertPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0666)
+	invert, err := os.OpenFile(invertPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	// dump meta
-	meta.Put([]byte("NumDocs"), []byte(strconv.FormatUint(b.NumDocs, 10)))
-	meta.Put([]byte("AvgDocLength"), []byte(strconv.FormatUint(uint64(b.AvgDocLength), 10)))
-	for docId, length := range b.DocLength {
-		meta.Put([]byte(strconv.FormatUint(docId, 10)), []byte(strconv.FormatUint(uint64(length), 10)))
+	// dump meta0
+	meta0.Put([]byte("NumDocs"), []byte(strconv.FormatUint(b.NumDocs, 10)))
+	meta0.Put([]byte("AvgDocLength"),
+		[]byte(strconv.FormatUint(uint64(b.AvgDocLength), 10)))
+	for i, doc := range b.DocsLength {
+		meta0.Put([]byte("ID_"+strconv.Itoa(i)),
+			[]byte(strconv.FormatUint(doc.id, 10)))
+	}
+
+	// dump meta1
+	for _, doc := range b.DocsLength {
+		var buf bytes.Buffer
+		err := binary.Write(&buf, binary.LittleEndian, doc.length)
+		if err != nil {
+			log.Fatal(err)
+		}
+		n, err := meta1.Write(buf.Bytes())
+		if n != buf.Len() || err != nil {
+			log.Fatalf("dump fail:n=%d,len=%d,err=%s\n", n, buf.Len(), err)
+		}
 	}
 
 	// dump vocab/invert
 	var loc uint64
 	for term, postingList := range b.indexer.InvertList {
-		buf := new(bytes.Buffer)
-		err := binary.Write(buf, binary.LittleEndian, uint64(postingList.Len()))
+		var buf bytes.Buffer
+		err := binary.Write(&buf, binary.LittleEndian, uint64(postingList.Len()))
 		if err != nil {
 			log.Fatal(err)
 		}
 		for e := postingList.Front(); e != nil; e = e.Next() {
 			if posting, ok := e.Value.(*types.Posting); ok {
-				err := binary.Write(buf, binary.LittleEndian, posting.DocId)
+				err := binary.Write(&buf, binary.LittleEndian, posting.DocId)
 				if err != nil {
 					log.Fatal(err)
 				}
-				err = binary.Write(buf, binary.LittleEndian, posting.Freq)
+				err = binary.Write(&buf, binary.LittleEndian, posting.Freq)
 				if err != nil {
 					log.Fatal(err)
 				}
@@ -128,15 +158,17 @@ func (b *Builder) Dump() {
 		}
 		n, err := invert.Write(buf.Bytes())
 		if n != buf.Len() || err != nil {
-			log.Fatalf("dump fail:n=%d,len=%d,err=%s\n", n, buf.Len(), err.Error())
+			log.Fatalf("dump fail:n=%d,len=%d,err=%s\n", n, buf.Len(), err)
 		}
 		vocab.Put([]byte(term), []byte(strconv.FormatUint(loc, 10)))
 		loc += uint64(n)
 	}
-	meta.Close()
+	meta0.Close()
+	meta1.Close()
 	vocab.Close()
 	invert.Close()
-	os.Rename(metaPath, b.opt.MetaPath)
+	os.Rename(meta0Path, b.opt.Meta0Path)
+	os.Rename(meta1Path, b.opt.Meta1Path)
 	os.Rename(vocabPath, b.opt.VocabPath)
 	os.Rename(invertPath, b.opt.InvertPath)
 }
