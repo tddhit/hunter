@@ -7,18 +7,18 @@ import (
 )
 
 func TestBuilder(t *testing.T) {
-	b, err := bindex.New("/Users/tangdandang/code/go/src/meizu.com/onemind/nlpservice/apps/builder/data/meta.bin", false)
+	b, err := bindex.New("meta.bin", false)
 	if err != nil {
 		panic(err)
 	}
 	b.Traverse()
 	/*
-		b, err := bindex.New("/Users/tangdandang/code/go/src/meizu.com/onemind/nlpservice/apps/builder/data/vocab.bin", false)
+		b, err := bindex.New("vocab.bin", false)
 		if err != nil {
 			panic(err)
 		}
 		b.Traverse()
-		file, err := os.OpenFile("/Users/tangdandang/code/go/src/meizu.com/onemind/nlpservice/apps/builder/data/inverted.bin", os.O_RDONLY, 0666)
+		file, err := os.OpenFile("inverted.bin", os.O_RDONLY, 0644)
 		if err != nil {
 			panic(err)
 		}
@@ -36,4 +36,5 @@ func TestBuilder(t *testing.T) {
 			id++
 		}
 	*/
+	New()
 }

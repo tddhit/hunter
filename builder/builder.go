@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"math"
 	"math/rand"
 	"os"
 	"strconv"
@@ -18,14 +19,14 @@ import (
 )
 
 const (
-	TimeFormat = "2006/01/02"
+	BM25_K1    float32 = 1.2
+	BM25_B     float32 = 0.75
+	TimeFormat         = "2006/01/02"
 )
 
 type Option struct {
 	SegmentPath  string
 	StopwordPath string
-	Meta0Path    string
-	Meta1Path    string
 	VocabPath    string
 	InvertPath   string
 }
@@ -36,12 +37,9 @@ type Builder struct {
 	indexer    *indexer.Indexer
 	dataSource datasource.DataSource
 
-	NumDocs      uint64
-	AvgDocLength uint32
-	DocsLength   []struct {
-		id     uint64
-		length uint32
-	}
+	numDocs      uint64
+	avgDocLength uint32
+	docLength    map[uint64]uint32
 }
 
 func New(option *Option) *Builder {
@@ -58,9 +56,9 @@ func New(option *Option) *Builder {
 }
 
 func (b *Builder) Reset(source datasource.DataSource) {
-	b.NumDocs = 0
-	b.AvgDocLength = 0
-	b.DocsLength = b.DocsLength[:]
+	b.numDocs = 0
+	b.avgDocLength = 0
+	b.docLength = make(map[uint64]uint32)
 	b.indexer.Reset()
 	b.dataSource = source
 }
@@ -70,37 +68,19 @@ func (b *Builder) Build() {
 		totalDocLength uint64 = 0
 	)
 	for doc := range b.dataSource.ReadChan() {
-		terms := b.proc.Segment([]byte(doc.Content))
-		docLength := len(terms)
+		doc.Terms = b.proc.Segment([]byte(doc.Content))
+		docLength := len(doc.Terms)
 		totalDocLength += uint64(docLength)
-		b.DocsLength = append(b.DocsLength, struct {
-			id     uint64
-			length uint32
-		}{
-			id:     doc.Id,
-			length: uint32(docLength),
-		})
-		doc.Id = b.NumDocs
-		doc.Terms = terms
+		b.docLength[doc.ID] = uint32(docLength)
 		b.indexer.Index(doc)
-		b.NumDocs++
+		b.numDocs++
 	}
-	b.AvgDocLength = uint32(totalDocLength / b.NumDocs)
-	log.Infof("NumDocs:%d\tAvgDocLength:%d\t", b.NumDocs, b.AvgDocLength)
+	b.avgDocLength = uint32(totalDocLength / b.numDocs)
+	log.Infof("NumDocs:%d\tAvgDocLength:%d\t", b.numDocs, b.avgDocLength)
 }
 
 func (b *Builder) Dump() {
 	// init file
-	meta0Path := fmt.Sprintf("%s.%d.tmp", b.opt.Meta0Path, rand.Int())
-	meta0, err := bindex.New(meta0Path, false)
-	if err != nil {
-		log.Fatal(err)
-	}
-	meta1Path := fmt.Sprintf("%s.%d.tmp", b.opt.Meta1Path, rand.Int())
-	meta1, err := os.OpenFile(meta1Path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
-	if err != nil {
-		log.Fatal(err)
-	}
 	vocabPath := fmt.Sprintf("%s.%d.tmp", b.opt.VocabPath, rand.Int())
 	vocab, err := bindex.New(vocabPath, false)
 	if err != nil {
@@ -110,28 +90,6 @@ func (b *Builder) Dump() {
 	invert, err := os.OpenFile(invertPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
 	if err != nil {
 		log.Fatal(err)
-	}
-
-	// dump meta0
-	meta0.Put([]byte("NumDocs"), []byte(strconv.FormatUint(b.NumDocs, 10)))
-	meta0.Put([]byte("AvgDocLength"),
-		[]byte(strconv.FormatUint(uint64(b.AvgDocLength), 10)))
-	for i, doc := range b.DocsLength {
-		meta0.Put([]byte("ID_"+strconv.Itoa(i)),
-			[]byte(strconv.FormatUint(doc.id, 10)))
-	}
-
-	// dump meta1
-	for _, doc := range b.DocsLength {
-		var buf bytes.Buffer
-		err := binary.Write(&buf, binary.LittleEndian, doc.length)
-		if err != nil {
-			log.Fatal(err)
-		}
-		n, err := meta1.Write(buf.Bytes())
-		if n != buf.Len() || err != nil {
-			log.Fatalf("dump fail:n=%d,len=%d,err=%s\n", n, buf.Len(), err)
-		}
 	}
 
 	// dump vocab/invert
@@ -144,11 +102,13 @@ func (b *Builder) Dump() {
 		}
 		for e := postingList.Front(); e != nil; e = e.Next() {
 			if posting, ok := e.Value.(*types.Posting); ok {
-				err := binary.Write(&buf, binary.LittleEndian, posting.DocId)
+				err := binary.Write(&buf, binary.LittleEndian, posting.DocID)
 				if err != nil {
 					log.Fatal(err)
 				}
-				err = binary.Write(&buf, binary.LittleEndian, posting.Freq)
+				idf := float32(math.Log2(float64(b.numDocs)/float64(postingList.Len()) + 1))
+				bm25 := idf * float32(posting.Freq) * (BM25_K1 + 1) / (float32(posting.Freq) + BM25_K1*(1-BM25_B+BM25_B*float32(b.docLength[posting.DocID])/float32(b.avgDocLength)))
+				err = binary.Write(&buf, binary.LittleEndian, bm25)
 				if err != nil {
 					log.Fatal(err)
 				}
@@ -163,12 +123,8 @@ func (b *Builder) Dump() {
 		vocab.Put([]byte(term), []byte(strconv.FormatUint(loc, 10)))
 		loc += uint64(n)
 	}
-	meta0.Close()
-	meta1.Close()
 	vocab.Close()
 	invert.Close()
-	os.Rename(meta0Path, b.opt.Meta0Path)
-	os.Rename(meta1Path, b.opt.Meta1Path)
 	os.Rename(vocabPath, b.opt.VocabPath)
 	os.Rename(invertPath, b.opt.InvertPath)
 }

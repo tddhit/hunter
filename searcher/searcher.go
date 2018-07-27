@@ -11,8 +11,6 @@ import (
 type Option struct {
 	SegmentPath  string
 	StopwordPath string
-	Meta0Path    string
-	Meta1Path    string
 	VocabPath    string
 	InvertPath   string
 }
@@ -26,8 +24,7 @@ func New(option *Option) *Searcher {
 	s := &Searcher{
 		indexer: indexer.New(),
 	}
-	s.indexer.LoadIndex(option.Meta0Path, option.Meta1Path,
-		option.VocabPath, option.InvertPath)
+	s.indexer.LoadIndex(option.VocabPath, option.InvertPath)
 	proc, err := preprocessor.New(option.SegmentPath, option.StopwordPath)
 	if err != nil {
 		log.Panic(err)

@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/huichen/sego"
+
+	"github.com/tddhit/tools/log"
 )
 
 type Preprocessor struct {
@@ -17,10 +19,12 @@ type Preprocessor struct {
 func New(segmentPath, stopwordPath string) (*Preprocessor, error) {
 	_, err := os.Stat(segmentPath)
 	if err != nil {
+		log.Error(err)
 		return nil, err
 	}
 	_, err = os.Stat(stopwordPath)
 	if err != nil {
+		log.Error(err)
 		return nil, err
 	}
 	p := &Preprocessor{
@@ -29,6 +33,7 @@ func New(segmentPath, stopwordPath string) (*Preprocessor, error) {
 	p.segmenter.LoadDictionary(segmentPath)
 	file, err := os.Open(stopwordPath)
 	if err != nil {
+		log.Error(err)
 		return nil, err
 	}
 	defer file.Close()
@@ -47,7 +52,7 @@ func (p *Preprocessor) Segment(text []byte) (terms []string) {
 	segments := p.segmenter.Segment(text)
 	segs := sego.SegmentsToSlice(segments, true)
 	for _, seg := range segs {
-		if _, ok := p.stopwords[seg]; !ok {
+		if _, ok := p.stopwords[seg]; !ok && seg != " " {
 			terms = append(terms, seg)
 		}
 	}
