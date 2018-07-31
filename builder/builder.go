@@ -7,7 +7,7 @@ import (
 	"math"
 	"math/rand"
 	"os"
-	"strconv"
+	"sync"
 
 	"github.com/tddhit/bindex"
 	"github.com/tddhit/tools/log"
@@ -23,6 +23,8 @@ const (
 	BM25_B     float32 = 0.75
 	TimeFormat         = "2006/01/02"
 )
+
+var pool sync.Pool
 
 type Option struct {
 	SegmentPath  string
@@ -40,6 +42,13 @@ type Builder struct {
 	numDocs      uint64
 	avgDocLength uint32
 	docLength    map[uint64]uint32
+}
+
+func init() {
+	pool.New = func() interface{} {
+		buf := make([]byte, 8)
+		return buf
+	}
 }
 
 func New(option *Option) *Builder {
@@ -120,7 +129,9 @@ func (b *Builder) Dump() {
 		if n != buf.Len() || err != nil {
 			log.Fatalf("dump fail:n=%d,len=%d,err=%s\n", n, buf.Len(), err)
 		}
-		vocab.Put([]byte(term), []byte(strconv.FormatUint(loc, 10)))
+		b := pool.Get().([]byte)
+		binary.LittleEndian.PutUint64(b, loc)
+		vocab.Put([]byte(term), b)
 		loc += uint64(n)
 	}
 	vocab.Close()

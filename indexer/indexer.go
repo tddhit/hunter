@@ -7,7 +7,6 @@ import (
 	"errors"
 	"math"
 	"os"
-	"strconv"
 	"syscall"
 	"time"
 	"unsafe"
@@ -135,14 +134,8 @@ func (idx *Indexer) lookup(key []byte, doc2BM25 map[uint64]float32) error {
 		log.Error(errNotFoundKey, string(key))
 		return errNotFoundKey
 	}
-	log.Debug("lookup:", string(key), string(value))
-	loc, err := strconv.ParseUint(string(value), 10, 64)
-	if err != nil {
-		log.Error(err)
-		return err
-	}
-	var count uint64
-	count = binary.LittleEndian.Uint64(idx.invertRef[loc : loc+8 : loc+8])
+	loc := binary.LittleEndian.Uint64(value)
+	count := binary.LittleEndian.Uint64(idx.invertRef[loc : loc+8 : loc+8])
 	log.Debug("count:", count)
 	loc += 8
 	for i := uint64(0); i < count; i++ {
